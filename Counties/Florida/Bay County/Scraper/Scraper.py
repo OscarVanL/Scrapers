@@ -1,8 +1,9 @@
 import sys
-import getopt
 import time
 import os
 import uuid
+from absl import app
+from absl import flags
 from datetime import datetime
 from selenium import webdriver
 from selenium.webdriver.support.ui import WebDriverWait
@@ -14,23 +15,26 @@ from common.captcha.benchmark.BenchmarkAdditionSolver import CaptchaSolver
 import utils.ScraperUtils as ScraperUtils
 from utils.ScraperUtils import Record, Charge
 
-settings = {
-    'portal-base': 'https://court.baycoclerk.com/BenchmarkWeb2/',
-    'state-code': 'FL',
-    'county': 'Bay',
-    'start-year': 2000,
-    'end-year': datetime.now().year,
-    'missing-thresh': 5,
-    'collect-pii': False,
-    'connect-thresh': 10,
-    'output': 'bay-county-scraped.csv',
-    'save-attachments': 'none',
-    'solve-captchas': False,
-    'verbose': False
-}
+FLAGS = flags.FLAGS
+flags.DEFINE_string('portal_base', 'https://court.baycoclerk.com/BenchmarkWeb2/', 'Base of the portal to scrape.')
+flags.DEFINE_string('state', 'FL', 'State code we are scraping.', short_name='s')
+flags.DEFINE_string('county', 'Bay', 'County we are scraping.', short_name='c')
+
+flags.DEFINE_integer('start_year', 2000, 'Year at which to start scraping.', short_name='y')
+flags.DEFINE_integer('end_year', datetime.now().year, 'Year at which to end scraping', short_name='e')
+
+flags.DEFINE_bool('collect_pii', False, 'Whether to collect PII.', short_name='p')
+flags.DEFINE_bool('solve_captchas', False, 'Whether to solve captchas.')
+flags.DEFINE_enum('save_attachments', 'none', ['none', 'filing', 'all'], 'Which attachments to save.', short_name='a')
+flags.DEFINE_string('output', 'bay-county-scraped.csv', 'Relative filename for our CSV', short_name='o')
+
+flags.DEFINE_integer('missing_thresh', 5, 'Number of consecutive missing records after which we move to the next year', short_name='t')
+flags.DEFINE_integer('connect_thresh', 10, 'Number of failed connection attempts allowed before giving up')
+
+ # TODO(mcsaucy): move everything over to absl.logging so we get this for free
+flags.DEFINE_bool('verbose', False, 'Whether to be noisy.')
 
 output_attachments = os.path.join(os.getcwd(), 'attachments')
-output_file = os.path.join(os.getcwd(), settings['output'])
 
 ffx_profile = webdriver.FirefoxOptions()
 # Automatically dismiss unexpected alerts.
@@ -47,53 +51,8 @@ else:
 captcha_solver = CaptchaSolver()
 
 
-def main():
-    # Parse Arguments
-    args = sys.argv[1:]
-    short_args = 'p:s:c:y:e:t:pc:o:a:uv'
-    long_args = ['portal-base=', 'state=', 'county=', 'start-year=', 'end-year=', 'missing-thresh=', 'collect-pii',
-                 'connect-thresh=', 'output=', 'save-attachments=','solve-captchas', 'verbose']
-
-    try:
-        args, vals = getopt.getopt(args, short_args, long_args)
-        for arg, val in args:
-            if arg in ('-p', '--portal-base'):
-                settings['portal-base'] = val
-            elif arg in ('-s', '--state'):
-                settings['state-code'] = val
-            elif arg in ('-c', '--county'):
-                settings['county'] = val
-            elif arg in ('-y', '--start-year'):
-                settings['start-year'] = val
-            elif arg in ('-e', '--end-year'):
-                settings['end-year'] = val
-            elif arg in ('-t', '--missing-thresh'):
-                settings['missing-thresh'] = val
-            elif arg in ('-p', '--collect-pii'):
-                settings['collect-pii'] = True
-            elif arg in ('-c', '--connect-thresh'):
-                settings['connect-thresh'] = val
-            elif arg in ('-o', '--output'):
-                if val.endswith('.csv') or val.endswith('.CSV'):
-                    settings['output'] = val
-                else:
-                    settings['output'] = '{}.csv'.format(val)
-            elif arg in ('-a', '--save-attachments'):
-                if val in {'none', 'filing', 'all'}:
-                    settings['save-attachments'] = val
-                else:
-                    raise ValueError('Invalid value {} for argument --save-attachments (-a)'.format(val))
-            elif arg in ('-u', '--solve-captchas'):
-                settings['solve-captchas'] = True
-            elif arg in ('-v', '--verbose'):
-                settings['verbose'] = True
-            else:
-                raise ValueError('Invalid argument {} provided to Scraper.'.format(arg))
-    except getopt.error as err:
-        print("Unable to read arguments.", str(err))
-
-    global output_file
-    output_file = os.path.join(os.getcwd(), settings['output'])
+def main(argv):
+    del argv
     begin_scrape()
 
 
@@ -106,13 +65,13 @@ def begin_scrape():
 
     # Find the progress of any past scraping runs to continue from then
     try:
-        last_case_number = ScraperUtils.get_last_csv_row(output_file).split(',')[3]
+        last_case_number = ScraperUtils.get_last_csv_row(FLAGS.output).split(',')[3]
         print("Continuing from last scrape (Case number: {})".format(last_case_number))
         last_year = 2000 + int(str(last_case_number)[:2])  # I know there's faster ways of doing this. It only runs once ;)
         if not last_case_number.isnumeric():
             last_case_number = last_case_number[:-4]
         last_case = int(str(last_case_number)[-6:])
-        settings['end-year'] = last_year
+        FLAGS.end_year = last_year
         continuing = True
     except FileNotFoundError:
         # No existing scraping CSV
@@ -120,7 +79,7 @@ def begin_scrape():
         pass
 
     # Scrape from the most recent year to the oldest.
-    for year in range(settings['end-year'], settings['start-year'], -1):
+    for year in range(FLAGS.end_year, FLAGS.start_year, -1):
         if continuing:
             N = last_case + 1
         else:
@@ -131,7 +90,7 @@ def begin_scrape():
 
         record_missing_count = 0
         # Increment case numbers until the threshold missing cases is met, then advance to the next year.
-        while record_missing_count < settings['missing-thresh']:
+        while record_missing_count < FLAGS.missing_thresh:
             # Generate the case number to scrape
             case_number = f'{YY:02}' + f'{N:06}'
 
@@ -163,11 +122,11 @@ def scrape_record(case_number):
     :param case_number: The current case's case number.
     """
     # Wait for court summary to load
-    for i in range(settings['connect-thresh']):
+    for i in range(FLAGS.connect_thresh):
         try:
             WebDriverWait(driver, 5).until(EC.presence_of_element_located((By.ID, 'summaryAccordion')))
         except TimeoutException:
-            if i == settings['connect-thresh'] - 1:
+            if i == FLAGS.connect_thresh - 1:
                 raise RuntimeError('Summary details did not load for case {}.'.format(case_number))
             else:
                 driver.refresh()
@@ -178,11 +137,11 @@ def scrape_record(case_number):
     summary_table_col3 = driver.find_elements_by_xpath('//*[@id="summaryAccordionCollapse"]/table/tbody/tr/td[3]/dl/dd')
 
     # Wait for court dockets to load
-    for i in range(settings['connect-thresh']):
+    for i in range(FLAGS.connect_thresh):
         try:
             WebDriverWait(driver, 5).until(EC.presence_of_element_located((By.ID, 'gridDocketsView')))
         except TimeoutException:
-            if i == settings['connect-thresh'] - 1:
+            if i == FLAGS.connect_thresh - 1:
                 raise RuntimeError('Dockets did not load for case {}.'.format(case_number))
             else:
                 driver.refresh()
@@ -195,8 +154,8 @@ def scrape_record(case_number):
     docket_attachments = driver.find_elements_by_class_name('casedocketimage')
 
     _id = str(uuid.uuid4())
-    _state = settings['state-code']
-    _county = settings['county']
+    _state = FLAGS.state
+    _county = FLAGS.county
     CaseNum = summary_table_col2[1].text.strip()
     AgencyReportNum = summary_table_col1[4].text.strip()
     ArrestDate = None  # Can't be found on this portal
@@ -205,7 +164,7 @@ def scrape_record(case_number):
     DivisionName = summary_table_col3[3].text.strip()
     CaseStatus = summary_table_col3[1].text.strip()
 
-    if settings['collect-pii']:
+    if FLAGS.collect_pii:
         # Create list of assigned defense attorney(s)
         defense_attorney_text = list(map(lambda x: x.text, docket_attorney))
         DefenseAttorney = ScraperUtils.parse_attorneys(defense_attorney_text)
@@ -217,15 +176,15 @@ def scrape_record(case_number):
 
         # Download docket attachments.
         # Todo(OscarVanL): This could be parallelized to speed up scraping if save-attachments is set to 'all'.
-        if settings['save-attachments']:
+        if FLAGS.save_attachments:
             for attachment_link in docket_attachments:
                 attachment_text = attachment_link.find_element_by_xpath('./../../td[3]').text.strip()
-                if settings['save-attachments'] == 'filing':
+                if FLAGS.save_attachments == 'filing':
                     if not ('CITATION FILED' in attachment_text or 'CASE FILED' in attachment_text):
                         # Attachment is not a filing, don't download it.
                         continue
                 ScraperUtils.save_attached_pdf(driver, output_attachments, '{}-{}'.format(case_number, attachment_text),
-                                               settings['portal-base'], attachment_link, 20, settings['verbose'])
+                                               FLAGS.portal_base, attachment_link, 20, FLAGS.verbose)
     else:
         DefenseAttorney = []
         PublicDefender = []
@@ -272,7 +231,7 @@ def scrape_record(case_number):
        'href')
     # profile_link = driver.find_element_by_xpath('//*[@id="gridParties"]/tbody/tr[1]/td[2]/div[1]/a').get_attribute(
     #     'href')
-    load_page(profile_link, 'Party Details:', settings['verbose'])
+    load_page(profile_link, 'Party Details:', FLAGS.verbose)
 
     Suffix = None
     DOB = None  # This portal has DOB as N/A for every defendent
@@ -286,7 +245,7 @@ def scrape_record(case_number):
     PartyID = None
 
     # Only collect PII if configured
-    if settings['collect-pii']:
+    if FLAGS.collect_pii:
         # Navigate to party profile
         full_name = driver.find_element_by_xpath(
             '//*[@id="mainTableContent"]/tbody/tr/td/table/tbody/tr[2]/td[2]/table[2]/tbody/tr/td[2]/table/tbody/tr[1]/td[2]').text.strip()
@@ -304,7 +263,7 @@ def scrape_record(case_number):
                     LastName, Suffix, DOB, Race, Sex, ArrestDate, FilingDate, OffenseDate, DivisionName, CaseStatus,
                     DefenseAttorney, PublicDefender, Judge, list(Charges.values()), ArrestingOfficer,
                     ArrestingOfficerBadgeNumber)
-    ScraperUtils.write_csv(output_file, record, settings['verbose'])
+    ScraperUtils.write_csv(FLAGS.output, record, FLAGS.verbose)
 
 
 def search_portal(case_number):
@@ -315,7 +274,7 @@ def search_portal(case_number):
     :return: A set of case number(s).
     """
     # Load portal search page
-    load_page(f"{settings['portal-base']}/Home.aspx/Search", 'Search', settings['verbose'])
+    load_page(f"{FLAGS.portal_base}/Home.aspx/Search", 'Search', FLAGS.verbose)
     # Give some time for the captcha to load, as it does not load instantly.
     time.sleep(0.8)
 
@@ -332,7 +291,7 @@ def search_portal(case_number):
         # move on with processing.
         captcha_image_elem = driver.find_element_by_xpath('//*/img[@alt="Captcha"]')
         captcha_buffer = captcha_image_elem.screenshot_as_png
-        if settings['solve-captchas']:
+        if FLAGS.solve_captchas:
             solved_captcha = captcha_solver.solve_captcha(captcha_buffer)
             captcha_textbox = driver.find_element_by_xpath('//*/input[@name="captcha"]')
             captcha_textbox.click()
@@ -347,7 +306,7 @@ def search_portal(case_number):
             while True:
                 try:
                     WebDriverWait(driver, 6 * 60 * 60).until(
-                        lambda x: case_number in driver.title)
+                        lambda x: case_number in driver.title )
                     print("continuing...")
                     break
                 except TimeoutException:
@@ -362,8 +321,8 @@ def search_portal(case_number):
 
     # If the title stays as 'Search': Captcha solving failed
     # If the title contains the case number or 'Search Results': Captcha solving succeeded
-    # If a timeout occurs, retry 'connect-thresh' times.
-    for i in range(settings['connect-thresh']):
+    # If a timeout occurs, retry 'connect_thresh' times.
+    for i in range(FLAGS.connect_thresh):
         try:
             # Wait for page to load
             WebDriverWait(driver, 5).until(
@@ -376,7 +335,8 @@ def search_portal(case_number):
                     driver.find_element_by_xpath(
                         '//div[@class="alert alert-error"]')
                     print("Captcha was solved incorrectly")
-                    if settings['solve-captchas'] and solved_captcha:
+
+                    if FLAGS.solve_captchas and solved_captcha:
                         solved_captcha.notify_incorrect()
                 except NoSuchElementException:
                     pass
@@ -386,9 +346,10 @@ def search_portal(case_number):
                 search_portal(case_number)
             elif 'Search Results: CaseNumber:' in driver.title:
                 # Captcha solved correctly
-                if settings['solve-captchas'] and solved_captcha:
+                if FLAGS.solve_captchas and solved_captcha:
                     solved_captcha.notify_correct()
-                case_count = ScraperUtils.get_search_case_count(driver, settings['county'])
+                # Figure out the number of cases returned
+                case_count = ScraperUtils.get_search_case_count(driver, FLAGS.county)
                 # Case number search found multiple cases.
                 if case_count > 1:
                     return ScraperUtils.get_associated_cases(driver)
@@ -397,13 +358,13 @@ def search_portal(case_number):
                     return set()
             elif case_number in driver.title:
                 # Captcha solved correctly
-                if settings['solve-captchas'] and solved_captcha:
+                if FLAGS.solve_captchas and solved_captcha:
                     solved_captcha.notify_correct()
                 # Case number search did find a single court case.
                 return {case_number}
         except TimeoutException:
-            if i == settings['connect-thresh'] - 1:
-                raise RuntimeError('Case page could not be loaded after {} attempts, or unexpected page title: {}'.format(settings['connect-thresh'], driver.title))
+            if i == FLAGS.connect_thresh - 1:
+                raise RuntimeError('Case page could not be loaded after {} attempts, or unexpected page title: {}'.format(FLAGS.connect_thresh, driver.title))
             else:
                 search_portal(case_number)
 
@@ -413,14 +374,14 @@ def select_case_input():
     Selects the Case Number input on the Case Search window.
     """
     # Wait for case selector to load
-    for i in range(settings['connect-thresh']):
+    for i in range(FLAGS.connect_thresh):
         try:
             WebDriverWait(driver, 5).until(EC.text_to_be_present_in_element((By.ID, 'title'), 'Case Search'))
         except TimeoutException:
-            if i == settings['connect-thresh'] - 1:
+            if i == FLAGS.connect_thresh - 1:
                 raise RuntimeError('Portal homepage could not be loaded')
             else:
-                load_page(f"{settings['portal-base']}/Home.aspx/Search", 'Search', settings['verbose'])
+                load_page(f"{FLAGS.portal_base}/Home.aspx/Search", 'Search', FLAGS.verbose)
 
     case_selector = driver.find_element_by_xpath(
         '//*/input[@searchtype="CaseNumber"]')
@@ -449,7 +410,7 @@ def load_page(url, expectedTitle, verbose=False):
     if verbose:
         print('Loading page:', url)
     driver.get(url)
-    for i in range(settings['connect-thresh']):
+    for i in range(FLAGS.connect_thresh):
         try:
             if isinstance(expectedTitle, str):
                 WebDriverWait(driver, 5).until(EC.title_contains(expectedTitle))
@@ -460,18 +421,18 @@ def load_page(url, expectedTitle, verbose=False):
             else:
                 raise ValueError('Unexpected type passed to load_page. Allowed types are str, list[str]')
         except TimeoutException:
-            if i == settings['connect-thresh'] - 1:
-                raise RuntimeError('Page {} could not be loaded after {} attempts. Check connction.'.format(url, settings['connect-thresh']))
+            if i == FLAGS.connect_thresh - 1:
+                raise RuntimeError('Page {} could not be loaded after {} attempts. Check connction.'.format(url, FLAGS.connect_thresh))
             else:
                 if verbose:
-                    print('Retrying page (attempt {}/{}): {}'.format(i+1, settings['connect-thresh'], url))
+                    print('Retrying page (attempt {}/{}): {}'.format(i+1, FLAGS.connect_thresh, url))
                 driver.get(url)
 
-    print('Page {} could not be loaded after {} attempts. Check connection.'.format(url, settings['connect-thresh']),
+    print('Page {} could not be loaded after {} attempts. Check connection.'.format(url, FLAGS.connect_thresh),
           file=sys.stderr)
 
 
 if __name__ == '__main__':
     if not os.path.exists(output_attachments):
         os.makedirs(output_attachments)
-    main()
+    app.run(main)
